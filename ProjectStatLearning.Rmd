@@ -1,0 +1,257 @@
+---
+title: "Appendix"
+author: "Phebe Chen"
+date: "2024-11-15"
+output: pdf_document
+---
+
+```{r}
+# Load Libraries
+library(readxl)
+library(tidyjson)
+library(corrplot)
+library(reshape2)
+library(ggplot2)
+library(caret)
+library(randomForest)
+library(gbm)
+library(Metrics)
+library(tidyr)
+
+# Section 1: Data Cleaning
+file_path <- "seasonDataset.xlsx"
+sheets <- excel_sheets(file_path)
+data <- lapply(sheets, function(sheet) read_excel(file_path, sheet = sheet))
+nhl_data <- bind_rows(data)
+
+# Select only numeric columns and drop "GP"
+numeric_data <- nhl_data[, sapply(nhl_data, is.numeric)]
+numeric_data <- numeric_data[, setdiff(names(numeric_data), "GP")]
+```
+
+```{r}
+# Section 2: Correlation Analysis
+cor_matrix <- cor(numeric_data)
+cor_pts <- cor_matrix[, "PTS"]
+
+# Drop redundant variables & filter
+columns_to_keep <- c("PTS", "AvAge", "SOS", "PPp", "PKp", "oPIMpG", "Sp", "SVp", 
+                     "PDO", "CFp", "FFp", "axDiff", "SCFp", "HDFp", "HDCp", "HDCOp")
+nhl_data_filtered <- nhl_data[, columns_to_keep]
+
+# Visualize Correlation Matrix
+cor_matrix_filtered <- cor(nhl_data_filtered)
+melted_cor <- melt(cor_matrix_filtered)
+ggplot(data = melted_cor, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", limit = c(-1, 1), name = "Correlation") +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+```
+
+```{r}
+# Section 3: Train-Test Split
+set.seed(123)
+train_index <- createDataPartition(nhl_data_filtered$PTS, p = 0.8, list = FALSE)
+train_data <- nhl_data_filtered[train_index, ]
+test_data <- nhl_data_filtered[-train_index, ]
+```
+
+```{r}
+# Section 4: Random Forest Model
+tune_rf <- tuneRF(train_data[, -which(names(train_data) == "PTS")], train_data$PTS, stepFactor = 1.5, improve = 0.01, trace = TRUE)
+#300 trees to reduce overfitting (small dataset)
+set.seed(123)
+rf_model <- randomForest(PTS ~ ., data = train_data, mtry = 7, ntree = 300, importance = TRUE)
+rf_predictions <- predict(rf_model, newdata = test_data)
+
+rf_residuals <- test_data$PTS - rf_predictions
+plot(rf_predictions, rf_residuals)
+abline(h = 0, col = "red")
+
+# Evaluate RF Model
+rmse_rf <- rmse(test_data$PTS, rf_predictions)
+rsq_rf <- cor(test_data$PTS, rf_predictions)^2
+cat("Random Forest - RMSE:", rmse_rf, "R-squared:", rsq_rf, "\n")
+
+# Cross-validation for Random Forest
+set.seed(123) 
+rf_cv <- train(PTS ~ ., data = train_data,
+               method = "rf",               
+               trControl = trainControl(method = "cv", number = 10), 
+               tuneGrid = expand.grid(mtry = 7),  
+               ntree = 300) 
+
+rf_predictions_cv <- predict(rf_cv, newdata = test_data)
+
+# Evaluate Random Forest model
+rmse_rf_cv <- rmse(test_data$PTS, rf_predictions_cv)
+rsq_rf_cv <- cor(test_data$PTS, rf_predictions_cv)^2
+cat("Random Forest - RMSE:", rmse_rf_cv, "R-squared:", rsq_rf_cv, "\n")
+
+```
+
+```{r}
+# Section 5: GBM Model
+set.seed(123)
+gbm_model <- gbm(PTS ~ ., data = train_data, distribution = "gaussian", 
+                 n.trees = 300, interaction.depth = 5, shrinkage = 0.01, cv.folds = 5)
+best_trees <- gbm.perf(gbm_model, method = "cv")
+gbm_predictions <- predict(gbm_model, test_data, n.trees = best_trees)
+
+gbm_residuals <- test_data$PTS - gbm_predictions
+plot(gbm_predictions, gbm_residuals)
+abline(h = 0, col = "red")
+
+# Evaluate GBM Model
+rmse_gbm <- rmse(test_data$PTS, gbm_predictions)
+rsq_gbm <- cor(test_data$PTS, gbm_predictions)^2
+cat("GBM - RMSE:", rmse_gbm, "R-squared:", rsq_gbm, "\n")
+
+# Cross-validation for GBM
+set.seed(123)  
+
+# Define tuning grid with correct parameters for GBM
+gbm_grid <- expand.grid(
+  n.trees = c(100, 200, 300), 
+  interaction.depth = c(3, 5, 7), 
+  shrinkage = c(0.01, 0.1), 
+  n.minobsinnode = c(10, 20) 
+)
+
+# Train the GBM model using caret with 10-fold cross-validation
+gbm_cv <- train(
+  PTS ~ ., 
+  data = train_data,
+  method = "gbm", 
+  trControl = trainControl(method = "cv", number = 10),  
+  tuneGrid = gbm_grid,  
+  verbose = FALSE 
+)
+
+# Get the best model and make predictions
+gbm_predictions_cv <- predict(gbm_cv, newdata = test_data)
+
+# Evaluate the GBM model
+rmse_gbm_cv <- rmse(test_data$PTS, gbm_predictions_cv)
+rsq_gbm_cv <- cor(test_data$PTS, gbm_predictions_cv)^2
+cat("GBM - RMSE:", rmse_gbm_cv, "R-squared:", rsq_gbm_cv, "\n")
+```
+
+```{r}
+# Section 6: Bagging
+set.seed(123)
+bagging_model <- randomForest(PTS ~ ., data = train_data, mtry = ncol(train_data) - 1, 
+                               importance = TRUE, ntree = 200)
+importance(bagging_model)
+varImpPlot(bagging_model)
+bagging_predictions <- predict(bagging_model, test_data)
+bagging_residuals <- test_data$PTS - bagging_predictions
+plot(bagging_predictions, bagging_residuals)
+abline(h = 0, col = "red")
+
+#Evaluate Bagging Model
+rmse_bagging <- rmse(test_data$PTS, bagging_predictions)
+rsq_bagging <- cor(test_data$PTS, bagging_predictions)^2
+cat("Bagging - RMSE:", rmse_bagging, "R-squared:", rsq_bagging, "\n")
+
+# Cross-validation for Bagging (Random Forest)
+set.seed(123)  # Set seed for reproducibility
+bagging_cv <- train(PTS ~ ., data = train_data,
+                    method = "rf",              
+                    trControl = trainControl(method = "cv", number = 10), 
+                    tuneGrid = expand.grid(mtry = ncol(train_data) - 1), 
+                    ntree = 200)  # Set number of trees
+
+bagging_predictions_cv <- predict(bagging_cv, newdata = test_data)
+
+# Evaluate Bagging model
+rmse_bagging_cv <- rmse(test_data$PTS, bagging_predictions_cv)
+rsq_bagging_cv <- cor(test_data$PTS, bagging_predictions_cv)^2
+cat("Bagging - RMSE:", rmse_bagging_cv, "R-squared:", rsq_bagging_cv, "\n")
+```
+
+```{r}
+# Section 7: Model Comparison
+
+# Create a data frame with predictions from the original models
+predictions <- data.frame(
+  Actual = test_data$PTS,
+  RF = round(rf_predictions, 2), 
+  GBM = round(gbm_predictions, 2), 
+  Bagging = round(bagging_predictions, 2),
+  RF_CV = round(rf_predictions_cv, 2),  
+  GBM_CV = round(gbm_predictions_cv, 2),  
+  Bagging_CV = round(bagging_predictions_cv, 2) 
+)
+
+# Print the predictions for comparison
+print(predictions)
+
+# Save the rounded predictions to a CSV file
+write.csv(predictions, "predictions.csv", row.names = FALSE)
+
+```
+
+```{r}
+# Separate the predictions into two datasets: Tuned Models and Cross-Validated Models
+predictions_long <- predictions %>%
+  gather(key = "Model", value = "Prediction", -Actual)
+
+predictions_tuned <- predictions_long %>%
+  filter(Model %in% c("RF", "GBM", "Bagging"))
+
+predictions_cv <- predictions_long %>%
+  filter(Model %in% c("RF_CV", "GBM_CV", "Bagging_CV"))
+
+# Create the plot for Tuned Models
+ggplot(predictions_tuned, aes(x = Actual, y = Prediction, color = Model)) +
+  geom_point(alpha = 0.7, size = 3) + 
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +  
+  geom_smooth(method = "lm", se = FALSE, aes(color = Model), linetype = "solid") +
+  labs(
+    title = "Tuned Models: Comparison of Predicted vs Actual Values", 
+    subtitle = "Dashed line represents perfect predictions",
+    x = "Actual Values", 
+    y = "Predicted Values"
+  ) +
+  scale_color_manual(values = c("RF" = "blue", "GBM" = "green", "Bagging" = "red")) +  
+  theme_minimal() + 
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 12, face = "italic"),
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    panel.grid.major = element_line(color = "gray", size = 0.5, linetype = "dotted"),
+    panel.grid.minor = element_line(color = "gray", size = 0.25, linetype = "dotted")
+  )
+
+# Create the plot for Cross-Validated Models
+ggplot(predictions_cv, aes(x = Actual, y = Prediction, color = Model)) +
+  geom_point(alpha = 0.7, size = 3) +  
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") + 
+  geom_smooth(method = "lm", se = FALSE, aes(color = Model), linetype = "solid") +
+  labs(
+    title = "Cross-Validated Models: Comparison of Predicted vs Actual Values", 
+    subtitle = "Dashed line represents perfect predictions",
+    x = "Actual Values", 
+    y = "Predicted Values"
+  ) +
+  scale_color_manual(values = c("RF_CV" = "purple", "GBM_CV" = "orange", "Bagging_CV" = "brown")) + 
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 12, face = "italic"),
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    panel.grid.major = element_line(color = "gray", size = 0.5, linetype = "dotted"),
+    panel.grid.minor = element_line(color = "gray", size = 0.25, linetype = "dotted")
+  )
+
+
+```
+
