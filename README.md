@@ -21,7 +21,7 @@ Team-level NHL season data aggregated across multiple seasons.
 
 ## Paper
 A full write-up of the methodology and results is available here:  
-📄 **[Project Paper (PDF)](ProjectStatLearning.pdf)**
+📄 **[Project Paper (PDF)](Project STAT 5610.pdf)**
 
 ## Tools
 R, caret, randomForest, gbm, ggplot2
